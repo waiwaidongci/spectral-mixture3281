@@ -2,6 +2,7 @@ from typing import Literal
 from pydantic import BaseModel,Field
 class NoteInput(BaseModel):
     run_id:int
+    result_id:int|None=None
     title:str=Field(min_length=2,max_length=120)
     interpretation:str=Field(min_length=8,max_length=2000)
     proposal:str=Field(min_length=8,max_length=2000)

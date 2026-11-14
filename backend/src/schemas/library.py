@@ -6,6 +6,7 @@ class LibraryOutput(BaseModel):
     description:str
     wavelengths:list[float]
     source:str
+    calibration_version:int=1
     endmember_count:int
     sample_count:int
     supported:bool

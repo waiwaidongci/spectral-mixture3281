@@ -1,4 +1,4 @@
-from sqlalchemy import String,Text,JSON
+from sqlalchemy import String,Text,JSON,Integer
 from sqlalchemy.orm import Mapped,mapped_column
 from ..config.database import Base
 class SpectralLibrary(Base):
@@ -9,3 +9,4 @@ class SpectralLibrary(Base):
     description:Mapped[str]=mapped_column(Text)
     wavelengths:Mapped[list]=mapped_column(JSON)
     source:Mapped[str]=mapped_column(String(160))
+    calibration_version:Mapped[int]=mapped_column(Integer,default=1)

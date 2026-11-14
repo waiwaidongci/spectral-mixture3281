@@ -17,11 +17,21 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 | 角色 | 账号 | 密码 | 典型权限 |
 |---|---|---|---|
-| 材料负责人 admin | admin@lengsha.demo | Lengsha2026! | 创建研究、批注、提交建议、批准或退回 |
-| 光谱研究员 analyst | analyst@lengsha.demo | Lengsha2026! | 核对来源、创建研究、编辑样本批注、提交复配建议 |
+| 材料负责人 admin | admin@lengsha.demo | Lengsha2026! | 创建研究、批注、提交建议、批准或退回、上传并切换复测批次 |
+| 光谱研究员 analyst | analyst@lengsha.demo | Lengsha2026! | 核对来源、创建研究、编辑样本批注、提交复配建议、上传并切换复测批次 |
 | 修复阅读者 viewer | viewer@lengsha.demo | Lengsha2026! | 查看全部页面及审计、下载获批研究CSV |
 
 后端JWT验证角色；隐藏按钮以外，写操作真实执行403。任何认证用户可读研究；未获批研究禁止导出，完成且至少有一份获批建议才可下载。已审阅建议不可重复审批。登录IP每分钟最多30次，全局错误处理中间件统一未知异常响应，所有登录/写入/worker完成写入审计。
+
+## 端元复测批次（版本化校准）
+
+端元页可按批次上传复测谱（JSON：`{"title":"...","endmembers":[{"code":"EM-01","name":"赭石","spectrum":[...]}]}`，或直接是端元数组；波段数、编号集合与可辨识性在服务端校验，必须覆盖现行全部端元且不多不少）。每个批次记录 `base_version`（上传时的现行校准版本），并自动为同库**所有既有研究**建立重算项：沿用该研究的样本、`noise_sigma`、重复数与根种子，只替换端元矩阵。上传后该库处于切换期，此时新建研究也会同时加入所有未结束的批次，确保不会出现“新端元配旧配比”。
+
+- 状态：`computing → ready`（可切换）或 `computing → failed`（任一研究重算失败）。失败批次保留旧版，可“重试失败研究”；重试只重跑失败/未完成项。
+- 切换：只有全部项 `completed` 且 `base_version == library.calibration_version` 时才允许。切换在库行锁内完成，并以 `UPDATE ... WHERE calibration_version = current` 原子递增版本，因此两批并发发布时只有一批成功；迟完成的旧批得到 409 并被标记 `superseded`，绝不回退现行校准。切换原子地替换该库端元快照，并为每个研究写入新校准结果修订（`run_revisions`，`kind=calibration`）。
+- 结果修订：原结果始终保留为 `kind=original` 修订；研究列表/结果页展示现行修订，可切换查看历史版本。复配建议绑定具体 `result_id`，原建议仍引用原校准依据；新结果必须重新提交建议并获得批准，导出默认只允许现行已获批结果，指定 `?result_id=` 可导出历史获批版本。CSV 增加 `library_version`/`result_kind` 两列。
+- 复用与恢复：重算项按与算法输入完全一致的 SHA256 来源指纹缓存；仅当来源指纹相同且存在完整结果时才复用，否则重新计算。worker 启动时执行幂等恢复：排队/运行中的研究重新入队，已完成的不重复生成修订；研究完成写入不会覆盖更晚的校准结果。
+- 页面：端元页显示批次进度（完成/失败数、百分比）、逐研究状态、来源复用标记、逐样本配比变化（旧→新与最大绝对变化）和失败原因；失败时显示错误摘要。
 
 ## 一天的工作
 
@@ -36,7 +46,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 ## 六页与实体
 
-首页、端元与样本、解混配置、配比与残差、复配审阅、研究留痕。五个业务实体 `SpectralLibrary / Endmember / MixtureSample / UnmixRun / ReplicationNote` 均具备表、model、schema、service、route、前端API、store与页面/组件；另有User/Audit。输入库/端元/观测向量在运行创建时冻结，后续批注不改历史结果。
+首页、端元与样本、解混配置、配比与残差、复配审阅、研究留痕。五个业务实体 `SpectralLibrary / Endmember / MixtureSample / UnmixRun / ReplicationNote` 均具备表、model、schema、service、route、前端API、store与页面/组件；另有User/Audit，以及校准批次 `CalibrationBatch / CalibrationItem / RunRevision`。输入库/端元/观测向量在运行创建时冻结，后续批注不改历史结果。
 
 三个库各40混合样本、4端元×12波段，共120样本/12端元。LS-A可辨识，LS-B近共线拒绝，LS-C含10份偏离线性模型样本。所有演示数据均为固定种子的合成谱，不是材料实测。真配比未提供给算法。连续标量 `noise_sigma` 使用MySQL DOUBLE，光谱/比例数组使用JSON双精度浮点，避免单精度改变输入。
 
@@ -80,4 +90,4 @@ npm run dev
 
 `.env` 参数有 COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、JWT_SECRET、SEED_DEMO；后端 DATABASE_URL、REDIS_URL 在Compose服务环境中定义。`.env`、构建目录、缓存与日志已忽略。角色枚举：`backend/src/constants/roles.py`、`frontend/src/constants/enums.ts`；运行状态：`backend/src/constants/status.py`、同一前端enums；审阅状态：`backend/src/schemas/note.py` Literal与前端ReviewStatus、model/default/service引用。共享枚举参与鉴权、worker状态与页面标签。
 
-测试、真实截图、健康快照及已知差异在同批 `test-artifacts/gb-0019/TESTING.md`，源码不包含测试产物。当前实现是单worker本地研究系统，服务中断后的任务恢复/多worker去重、库上传管理、实测光谱校准、称量设备控制不在本项目范围。清理：`docker compose down -v --remove-orphans`（删除演示卷）。MIT License。
+测试、真实截图、健康快照及已知差异在同批 `test-artifacts/gb-0019/TESTING.md`，源码不包含测试产物。当前实现是单worker本地研究系统；worker 启动时的中断任务恢复已支持（幂等重入队，不重复生成修订），多 worker 并发去重、复测谱的实测采集/文件格式适配、称量设备控制不在本项目范围。迁移 `002_calibration_batches.sql` 用于既有库升级。清理：`docker compose down -v --remove-orphans`（删除演示卷）。MIT License。
